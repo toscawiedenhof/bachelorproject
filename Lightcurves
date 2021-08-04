@@ -1,0 +1,287 @@
+"""
+
+author: Tosca Wiedenhof
+Student Number: 10876278
+Course:         Bachelor Project
+Code:           2/6
+
+In this file:
+    Differential photometry with reference star
+    Calibration with (B-V) magnitude 
+    Result in calibrated light curves in magnitude with errors
+    
+"""
+
+import glob
+from astropy.io import fits
+from astropy.table import Table
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+# Select source and path
+name='NGC6940'
+path='/Users/toscawiedenhof/Desktop'
+
+
+# Load all fit files
+
+file_list = glob.glob('{}/{}/Fits/*.fit'.format(path,name))
+print ('number of (fits) images: ', len(file_list))
+file_list.sort()
+
+
+# Load sources and positions
+
+sources = np.loadtxt('{}/{}/sources.csv'.format(path,name), delimiter=',')
+positions = np.loadtxt('{}/{}/sources_positions.csv'.format(path,name), delimiter=',')
+sources=Table(sources, names=['id', 'xcentroid', 'ycentroid', 'sharpness', 'roundness1', 'roundness2', 'npix', 'sky', 'peak', 'flux', 'mag'])
+sources['id']=np.arange(1,len(sources)+1)
+print(sources)
+
+
+# Load photometry tables
+
+phot_table_list=[]
+for i in range(len(file_list)):
+    file=np.loadtxt('{}/{}/phot_tables/table_{}'.format(path,name,i+1))
+    table=Table(file, names=['id','xcentre','ycentre','aperture_sum','annulus_median','aper_bkg','aper_sum_bkgsub','SNR','error','error_mag'])
+    table['id']=np.arange(1,len(sources)+1)
+    phot_table_list.append(table)
+
+
+# For NGC 6940, there was a middle part with untrue values, make a selection of right values
+
+file_list=(file_list[0:221]+file_list[299:430])
+print ('number of (fits) images used: ', len(file_list))
+
+phot_table_list= (phot_table_list[0:221]+phot_table_list[299:430])
+print ('number of tables left: ', len(phot_table_list))
+
+
+# Determine time for source set 
+
+time=[]
+for file in file_list:
+    time.append(fits.getheader(file)['JD'])
+
+
+# Determine fluxes and raw magnitude with errors
+
+flux_all=[]
+error_flux_all=[]
+mag_raw=[] 
+error_mag_raw=[]
+
+for i in range(len(sources)):
+    flux_obj=[]
+    flux_obj_err=[]
+    mag_error=[]
+    for table in phot_table_list:
+        flux_obj.append(table[i]['aper_sum_bkgsub'])
+        flux_obj_err.append(table[i]['error'])
+        mag_error.append(table[i]['error_mag'])
+    flux_all.append(flux_obj)
+    mag_raw.append(-2.5*np.log10(flux_obj))
+    error_flux_all.append(flux_obj_err)
+    error_mag_raw.append(mag_error)
+
+
+# Plot fluxes with errors
+
+plt.figure()
+for i in range(len(sources)):
+    plt.scatter(time,flux_all[i],s=3)
+    plt.errorbar(time,flux_all[i],yerr=error_flux_all[i],linestyle='None')
+    plt.annotate('{}'.format(i+1), xy=(time[0],flux_all[i][0]),fontsize=4)
+plt.legend()
+plt.title('Fluxes of all sources')
+plt.xlabel('Time')
+plt.ylabel('Flux')
+plt.show()
+
+# Plot magnitudes with errors (not calibrated)
+
+plt.figure()
+for i in range(len(sources)):
+    plt.scatter(time,mag_raw[i],s=0.5)
+    plt.errorbar(time,mag_raw[i],yerr=error_mag_raw[i],linestyle='None')
+    plt.annotate('{}'.format(i+1), xy=(time[0]-0.001,mag_raw[i][0]),fontsize=6)
+plt.legend()
+plt.title('Magnitudes of all sources (not calibrated)')
+plt.xlabel('Time')
+plt.ylabel('Flux')
+plt.gca().invert_yaxis()
+plt.show()
+
+
+### Differential photometry
+
+# Select 15 of the brightest objects (exclude overexposured object if any)
+
+brightest=[]
+mean=[]
+for i in range(len(sources)):
+    mean.append([np.mean(flux_all[i]),i])
+mean_s=sorted(mean)
+for bright in mean_s[-15:]:
+    brightest.append(bright[1])
+brightest= [index+1 for index in brightest] 
+print('10 brightest object ids:',brightest)
+
+plt.figure()
+for ids in brightest:
+    plt.scatter(time,flux_all[ids-1],label=ids)
+plt.legend()
+plt.title('Fluxes of all objects')
+plt.xlabel('Time')
+plt.ylabel('Flux')
+plt.show()
+
+
+# Compare one bright sources to others, do this for all of them
+
+nr=818
+flux1=flux_all[nr-1]
+mag1=-2.5*np.log10(flux1)
+for i in brightest:
+    flux2=flux_all[i-1]
+    mag2=-2.5*np.log10(flux2)
+    mag_rel=mag1-mag2
+    fig, axs = plt.subplots(2)
+    axs[0].scatter(time,mag1)
+    axs[0].scatter(time,mag2)
+    fig.suptitle('obj {} - obj {} in magnitudes'.format(nr,i))
+    axs[1].scatter(time,mag_rel-np.mean(mag_rel))
+    # axs[1].set_ylim([-0.05,0.05])
+    plt.show()
+    
+# Other way to compare, select two sources
+
+i=209
+j=818
+
+fig, axs = plt.subplots(2)
+fig.suptitle('obj {} - obj {} in flux'.format(i,j))
+axs[0].scatter(time,flux_all[i-1])
+axs[0].scatter(time,flux_all[j-1])
+axs[1].scatter(time,mag_rel-np.mean(mag_rel))
+plt.show()
+
+fig, axs = plt.subplots(2)
+fig.suptitle('obj {} - obj {} in magnitudes'.format(i,j))
+axs[0].scatter(time,mag_raw[i-1])
+axs[0].scatter(time,mag_raw[j-1])
+axs[1].scatter(time,mag_raw[i-1]-mag_raw[j-1]-np.mean(mag_raw[i-1]-mag_raw[j-1]))
+plt.show()
+
+
+# Select id(s) for reference star and add fluxes into one reference flux
+
+ref_ids=[837,209,254,521]
+
+flux_ref=[]
+flux_ref_error=[]
+for ids in ref_ids:
+    flux_ref_id=flux_all[ids-1]
+    flux_ref.append(flux_ref_id)
+    flux_ref_error.append(np.square(error_flux_all[ids-1]))
+
+flux_ref=np.sum(flux_ref,axis=0)
+flux_ref_error=np.sqrt(np.sum(flux_ref_error,axis=0))
+
+# Plot all reference star as final check
+
+plt.figure()
+for ids in ref_ids:
+    plt.scatter(time,flux_all[ids-1],label=ids)
+plt.legend()
+plt.title('Fluxes of reference stars')
+plt.xlabel('Time')
+plt.ylabel('Flux')
+plt.show()
+
+# Plot reference flux
+
+plt.figure() 
+plt.scatter(time,flux_ref,s=2)
+plt.errorbar(time, flux_ref, flux_ref_error,linestyle='None')
+plt.title('Reference flux')
+plt.xlabel('Time')
+plt.ylabel('Flux')
+plt.show()
+
+
+### CALIBRATION
+
+# Select id of calibration source, look up magnitude in Simbad/Aladin
+
+id_cal=792
+vmag=10.970
+
+flux_obj=flux_all[id_cal-1]
+flux_ref=flux_ref
+
+rel=np.divide(flux_obj,flux_ref)
+rel=np.mean(rel)
+
+cal=-2.5*np.log10(rel)
+C=vmag-cal
+
+print(cal,C)
+
+
+# Determine calibrated magnitudes (+error), mean magnitude (+error), standarde deviation
+
+mag_all=[]
+error_mag_all=[]
+
+mag_all_mean= []
+error_mag_mean=[]
+std_all=[]
+
+for i in range(len(sources)):
+    flux_obj=[]
+    flux_obj_error=[]
+    
+    for table in phot_table_list:
+        flux_obj.append(table[i]['aper_sum_bkgsub'])
+        flux_obj_error.append(table[i]['error'])
+        
+    rel = np.divide(flux_obj,flux_ref)
+    rel_error=np.sqrt(np.square(np.divide(flux_obj_error,flux_obj)) + np.square(np.divide(flux_ref_error,flux_ref))) * rel
+    mag = -2.5*np.log10(rel)+C
+    mag_error=-2.5*0.43429* np.divide(rel_error,rel)
+    mag_all.append(mag)
+    error_mag_all.append(mag_error)
+    mag_all_mean.append(np.mean(mag))
+    error_mag_mean.append(np.sqrt(np.sum(np.square(mag_error)))/len(time))
+    std_all.append(np.std(mag))
+
+
+# Plot magnitude with errors of all sources
+
+plt.figure()
+for obj in range(len(mag_all)):
+    plt.scatter(time, mag_all[obj] ,s=3)
+    plt.errorbar(time,mag_all[obj],yerr=error_mag_all[obj], linestyle="None")
+for i in range(len(mag_all)):
+    plt.annotate('{}'.format(i+1), xy=(time[0],mag_all[i][0]),fontsize=4)
+plt.gca().invert_yaxis()
+plt.title('Lightcurves with errors all sources')
+plt.ylim(20,6)
+plt.xlabel('Time')
+plt.ylabel('Magnitude')
+plt.show()
+
+
+# Save time, magnitudes (+error), mean magnitude (+error) and standarde deviation
+
+np.savetxt('{}/{}/time.csv'.format(path,name),time)
+np.savetxt('{}/{}/mag_all.csv'.format(path,name), mag_all, delimiter=',')
+np.savetxt('{}/{}/mag_all_error.csv'.format(path,name), error_mag_all, delimiter=',')
+np.savetxt('{}/{}/mag_mean.csv'.format(path,name), mag_all_mean, delimiter=',')
+np.savetxt('{}/{}/mag_mean_error.csv'.format(path,name), error_mag_mean, delimiter=',')
+np.savetxt('{}/{}/mag_std.csv'.format(path,name), std_all, delimiter=',')
+
+
