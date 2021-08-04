@@ -1,0 +1,209 @@
+"""
+
+author: Tosca Wiedenhof
+Student Number: 10876278
+Course:         Bachelor Project
+Code:           1/6
+
+In this file:
+    Detect all sources with DAO star finder
+    Remove sources from border and too close to one another
+    Photometry tables
+    
+"""
+
+import glob
+from astropy.io import fits
+import matplotlib.pyplot as plt
+import numpy as np
+from photutils import aperture_photometry
+from astropy.stats import sigma_clipped_stats
+from photutils import DAOStarFinder
+from photutils import CircularAperture, CircularAnnulus
+from matplotlib.colors import LogNorm
+
+# Select source and choose path
+name='NGC6940'
+path='/Users/toscawiedenhof/Desktop'
+
+
+# Load all fit files
+file_list = glob.glob('{}/{}/Fits/*.fit'.format(path,name))
+print ('number of (fits) images: ', len(file_list))
+file_list.sort()
+
+
+# Stack selection of files
+
+stack=[]
+for file in file_list[1:50]:
+    stack.append(fits.getdata(file))
+    print(file)
+
+files_stacked_median=[]
+files_stacked_median.append(np.median(stack,axis=0))
+
+# Determine FWHM for each photo
+
+fwhm_all=[]
+for i in range(len(file_list)):
+    data=fits.getdata(file_list[i])
+    ydata=data[778]
+    max_y = np.max(ydata)
+    xs = [x for x in range(len(ydata)) if ydata[x] > (max_y/2.0)]
+    fwhm=max(xs)-min(xs)
+    fwhm_all.append(fwhm)
+    print('fwhm photo {} ='.format(i+1), fwhm)
+
+
+# Star find data with stacked file
+
+Starfinddata=files_stacked_median[0]
+mean, median, std = sigma_clipped_stats(Starfinddata,sigma=3)
+print('image statistics:')
+print( 'mean', mean)
+print( 'median' , median)
+print( 'standard deviation', std)
+
+plt.figure()
+plt.imshow(Starfinddata,cmap='gray', norm=LogNorm())
+plt.title('Stacked photo')
+plt.show()
+
+
+# Detect all sources with DAO starfinder 
+
+sources_all = DAOStarFinder(fwhm=7,threshold=15*std)(Starfinddata - median)
+sources = sources_all[:]
+print('number of sources detected:',len(sources_all))
+positions_all = np.transpose((sources_all['xcentroid'], sources_all['ycentroid'])) 
+
+# Plot all found sources in stacked file
+
+plt.figure(figsize=(25,20))
+plt.imshow(Starfinddata, cmap='Greys_r', norm=LogNorm(), origin='lower',vmin=500)
+for i in range(len(sources_all)):
+    plt.annotate('{}'.format(i+1), xy=(positions_all[i]),fontsize=5)
+plt.title('All detected sources on stacked file')
+plt.show()
+
+
+# Determine if one aperture can be used for all images,
+# or an aperture has to be set to each image
+
+# Set radius for apertures and annulus
+ap=18
+an1=ap+2
+an2=ap+7
+
+apertures = CircularAperture(positions_all, ap) 
+annulus_aperture = CircularAnnulus(positions_all, r_in=an1, r_out=an2)
+
+# Check on image if apertures are set correct
+
+plt.figure(figsize=(25,20))
+plt.imshow(Starfinddata, cmap='Greys_r', norm=LogNorm(), origin='lower',vmin=500)
+apertures.plot(color='red', lw=1.5, alpha=0.5)
+annulus_aperture.plot(color='blue', lw=1.5, alpha=0.5)
+plt.title('All detected sources with apertures on stacked file')
+plt.show()
+
+
+# Select sources too close to oneanother, min length is annulus inner and outer radius
+
+close_i=[]
+for i in range(len(sources)):
+    for j in range(len(sources)):
+        dx=positions_all[i][0]-positions_all[j][0]
+        dy=positions_all[i][1]-positions_all[j][1]
+        d = np.sqrt(np.square(dx)+np.square(dy))
+        if(d<(an1+an2) and d!=0 ):
+            # print(i,j)
+            close_i.append(i)
+            close_i.append(j)
+ 
+# Select sources in empty border by setting border limits
+                            
+xmin=80
+xmax=5400
+ymin=80
+ymax=3550
+
+border_i=[]
+for i in range(len(sources)):
+    if(positions_all[i][0]<xmin or 
+       positions_all[i][0]>xmax or 
+       positions_all[i][1]<ymin or
+       positions_all[i][1]>ymax):
+        border_i.append(i)
+
+# Remove sources too close and sources in border
+
+remove_tot=close_i+border_i
+remove_i=[]
+for i in close_i+border_i:
+    if i not in remove_i:
+        remove_i.append(i)
+        remove_i.sort()              
+print('number of sources to be removed:',len(remove_i))
+print('number of good sources left',len(sources_all)-len(remove_i))
+            
+sources.remove_rows(remove_i)
+
+sources['id']=np.arange(1,len(sources)+1)
+print('Table of all usefull sources:')
+print(sources)
+
+# Set positions and apertures for sources left
+
+positions = np.transpose((sources['xcentroid'], sources['ycentroid'])) 
+apertures = CircularAperture(positions, ap) 
+annulus_aperture = CircularAnnulus(positions, r_in=an1, r_out=an2)
+
+# Plot usefull sources 
+
+plt.figure(figsize=(25,20))
+plt.imshow(Starfinddata, cmap='Greys_r', norm=LogNorm(), origin='lower',vmin=500)
+apertures.plot(color='red', lw=1.5, alpha=0.5)
+annulus_aperture.plot(color='blue', lw=1.5, alpha=0.5)
+# for i in range(len(sources)):
+#     plt.annotate('{}'.format(i+1), xy=(positions[i]),fontsize=5)
+plt.title('Sources on stacked file')
+plt.show()
+
+
+# Perform photometry on sources
+
+phot_table_list=[]
+
+for file in range(len(file_list)):
+    phot_table_list.append('phot_table_{}'.format(file))
+
+for file in range(len(file_list)):
+    annulus_masks = annulus_aperture.to_mask(method='center')
+    bkg_median=[]
+    for mask in annulus_masks:
+        annulus_data = mask.multiply(fits.getdata(file_list[file]))
+        annulus_data_1d = annulus_data[mask.data > 0]
+        _, median_sigclip, _ = sigma_clipped_stats(annulus_data_1d)
+        bkg_median.append(median_sigclip)
+    bkg_median = np.array(bkg_median)
+    
+    phot_table = aperture_photometry(fits.getdata(file_list[file]), apertures) 
+    phot_table['annulus_median'] = bkg_median
+    phot_table['aper_bkg'] = bkg_median * apertures.area
+    phot_table['aper_sum_bkgsub'] = np.abs(phot_table['aperture_sum'] - phot_table['aper_bkg'])
+    phot_table['SNR'] = phot_table['aper_sum_bkgsub'] / (phot_table['aper_sum_bkgsub']+ phot_table['aper_bkg'])**(0.5)
+    phot_table['error'] = phot_table['aper_sum_bkgsub'] / phot_table['SNR'] 
+    phot_table['error_mag'] = 1.086/phot_table['SNR']
+    phot_table_list[file]=phot_table
+    print('file',file+1,'of total', len(file_list))
+
+
+# Save photometry tables, sources and positions
+
+for i in range(len(phot_table_list)):
+    np.savetxt('{}/{}/phot_tables/table_{}'.format(path,name,i+1),phot_table_list[i])
+    
+np.savetxt('{}/{}/sources.csv'.format(path,name), sources, delimiter=',')
+np.savetxt('{}/{}/sources_positions.csv'.format(path,name), positions, delimiter=',')
